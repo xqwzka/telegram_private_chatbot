@@ -482,6 +482,29 @@ async function handlePrivateMessage(msg, env, ctx) {
   const isBanned = await env.TOPIC_MAP.get(`banned:${userId}`);
   if (isBanned) return;
 
+  // --- 新增：关键词拦截检查 ---
+  const messageText = msg.text || msg.caption || "";
+  if (messageText) {
+      const bannedKeywordsStr = await env.TOPIC_MAP.get("config:banned_keywords");
+      if (bannedKeywordsStr) {
+          try {
+              const keywords = JSON.parse(bannedKeywordsStr);
+              if (Array.isArray(keywords) && keywords.length > 0) {
+                  for (const kw of keywords) {
+                      if (messageText.includes(kw)) {
+                          Logger.info('message_blocked_by_keyword', { userId, keyword: kw });
+                          // 直接丢弃消息，不再往下执行
+                          return;
+                      }
+                  }
+              }
+          } catch(e) {
+              Logger.error('parse_banned_keywords_failed', e);
+          }
+      }
+  }
+  // --- 新增结束 ---
+
   const verified = await env.TOPIC_MAP.get(`verified:${userId}`);
 
   if (!verified) {
@@ -717,6 +740,68 @@ async function handleAdminReply(msg, env, ctx) {
       ctx.waitUntil(handleCleanupCommand(threadId, env));
       return;
   }
+
+  // --- 新增：关键词屏蔽命令 ---
+  if (text.startsWith("/GJC")) {
+      const args = text.replace("/GJC", "").trim().split(/\s+/).filter(Boolean);
+      const currentStr = await env.TOPIC_MAP.get("config:banned_keywords");
+      let keywords = [];
+      if (currentStr) {
+          try { keywords = JSON.parse(currentStr); } catch(e) {}
+      }
+      
+      // 如果单独发送 /GJC，则列出当前屏蔽的关键词
+      if (args.length === 0) {
+          const kwList = keywords.length > 0 ? keywords.map(k => `\`${k}\``).join(", ") : "无";
+          await tgCall(env, "sendMessage", withMessageThreadId({
+              chat_id: env.SUPERGROUP_ID,
+              text: `🛡️ **当前屏蔽关键词**:\n${kwList}\n\n💡 _使用方法: \`/GJC 关键词1 关键词2\` 添加屏蔽_`,
+              parse_mode: "Markdown"
+          }, threadId));
+          return;
+      }
+
+      // 添加新关键词并去重
+      const newKeywords = [...new Set([...keywords, ...args])];
+      await env.TOPIC_MAP.put("config:banned_keywords", JSON.stringify(newKeywords));
+      
+      await tgCall(env, "sendMessage", withMessageThreadId({
+          chat_id: env.SUPERGROUP_ID,
+          text: `✅ **已添加屏蔽关键词**: ${args.map(k => `\`${k}\``).join(", ")}`,
+          parse_mode: "Markdown"
+      }, threadId));
+      return;
+  }
+
+  if (text.startsWith("/JC")) {
+      const args = text.replace("/JC", "").trim().split(/\s+/).filter(Boolean);
+      if (args.length === 0) {
+          await tgCall(env, "sendMessage", withMessageThreadId({
+              chat_id: env.SUPERGROUP_ID,
+              text: `⚠️ 请输入要删除的关键词，例如：\`/JC 广告 推广\``,
+              parse_mode: "Markdown"
+          }, threadId));
+          return;
+      }
+
+      const currentStr = await env.TOPIC_MAP.get("config:banned_keywords");
+      let keywords = [];
+      if (currentStr) {
+          try { keywords = JSON.parse(currentStr); } catch(e) {}
+      }
+
+      // 移除指定的关键词
+      const remainingKeywords = keywords.filter(k => !args.includes(k));
+      await env.TOPIC_MAP.put("config:banned_keywords", JSON.stringify(remainingKeywords));
+
+      await tgCall(env, "sendMessage", withMessageThreadId({
+          chat_id: env.SUPERGROUP_ID,
+          text: `🗑️ **已移除屏蔽关键词**: ${args.map(k => `\`${k}\``).join(", ")}`,
+          parse_mode: "Markdown"
+      }, threadId));
+      return;
+  }
+  // --- 新增结束 ---
 
   // 优先通过 thread 映射快速反查用户，缺失时再降级全量扫描
   let userId = null;
@@ -1533,4 +1618,6 @@ async function delaySend(env, key, ts) {
 
         await env.TOPIC_MAP.delete(key);
     }
+}
+
 }

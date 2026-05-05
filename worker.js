@@ -1619,5 +1619,3 @@ async function delaySend(env, key, ts) {
         await env.TOPIC_MAP.delete(key);
     }
 }
-
-}
